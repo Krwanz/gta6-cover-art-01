@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Coast Cover Studio — GTA VI-style cover maker</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">NC</span>
+    <div>
+      <h1>Neon Coast <span>Cover Studio</span></h1>
+      <p>Turn any photo into GTA VI-style multi-panel cover art. 100% offline — photos never leave this machine.</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="undoBtn" class="btn ghost" title="Undo (Ctrl+Z)">↩ Undo</button>
+    <button id="redoBtn" class="btn ghost" title="Redo (Ctrl+Y)">↪ Redo</button>
+    <button id="exportAllBtn" class="btn primary">Export all sizes ↓</button>
+  </div>
+</header>
+
+<main class="studio">
+  <section class="preview-col">
+    <div class="preview-wrap">
+      <canvas id="preview" width="1080" height="1080"></canvas>
+      <div id="previewHint" class="preview-hint">Drag a panel to crop &amp; position · Scroll to zoom · Click a panel to select it</div>
+    </div>
+    <div class="size-row" role="group" aria-label="Export size">
+      <span class="row-label">Export size</span>
+      <button class="size-btn" data-size="1080x1080">1080 × 1080</button>
+      <button class="size-btn" data-size="1080x1350">1080 × 1350</button>
+      <button class="size-btn" data-size="1920x1080">1920 × 1080</button>
+      <button class="size-btn" data-size="1080x1920">1080 × 1920 story</button>
+      <button id="exportBtn" class="btn primary">Export PNG ↓</button>
+    </div>
+  </section>
+
+  <aside class="controls">
+    <section class="panel-block">
+      <h2>1 · Layout</h2>
+      <div id="layoutRow" class="choice-grid"></div>
+    </section>
+
+    <section class="panel-block">
+      <h2>2 · Photos</h2>
+      <div class="photo-actions">
+        <label class="btn" for="fileInput">+ Add photos</label>
+        <input id="fileInput" type="file" accept="image/*" multiple hidden>
+        <button id="fillBtn" class="btn ghost" title="Fill every empty panel with the samples, in order">Fill panels</button>
+      </div>
+      <div id="photoStrip" class="photo-strip"></div>
+      <p class="tiny">Drag &amp; drop photos anywhere on the page. Click a sample to put it in the selected panel.</p>
+      <div class="crop-row">
+        <label>Zoom <input id="zoomSlider" type="range" min="100" max="400" value="100"></label>
+        <button id="fitBtn" class="btn ghost">Fit</button>
+        <button id="fillPanelBtn" class="btn ghost">Fill</button>
+      </div>
+    </section>
+
+    <section class="panel-block">
+      <h2>3 · Caption</h2>
+      <label class="field">Eyebrow <input id="eyebrowInput" type="text" value="VICE CITY" maxlength="24"></label>
+      <label class="field">Title <input id="titleInput" type="text" value="NEON COAST" maxlength="18"></label>
+      <label class="field">Subtitle <input id="subtitleInput" type="text" value="vice city nights" maxlength="32"></label>
+      <label class="field">Badge <input id="badgeInput" type="text" value="LAUNCH WEEK" maxlength="16"></label>
+      <div class="heat-row">
+        <span class="row-label">Heat</span>
+        <span id="heatStars" class="heat-stars" title="Click to set the heat meter"></span>
+      </div>
+    </section>
+
+    <section class="panel-block">
+      <h2>4 · Grade &amp; finish</h2>
+      <div id="gradeRow" class="choice-grid"></div>
+      <label class="check"><input id="grainCheck" type="checkbox" checked> Film grain</label>
+      <label class="check"><input id="vignetteCheck" type="checkbox" checked> Vignette</label>
+    </section>
+
+    <p class="tiny foot">Original art and lettering — no Rockstar Games logo, artwork or
+    fonts. Title font Anton and script font Pacifico are under the SIL Open Font License.</p>
+  </aside>
+</main>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
