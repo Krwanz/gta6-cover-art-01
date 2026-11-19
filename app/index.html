@@ -16,6 +16,7 @@
     </div>
   </div>
   <div class="top-actions">
+    <button id="shuffleBtn" class="btn" title="Random layout, grade, lettering and caption">✦ Surprise me</button>
     <button id="undoBtn" class="btn ghost" title="Undo (Ctrl+Z)">↩ Undo</button>
     <button id="redoBtn" class="btn ghost" title="Redo (Ctrl+Y)">↪ Redo</button>
     <button id="exportAllBtn" class="btn primary">Export all sizes ↓</button>
@@ -50,6 +51,7 @@
         <label class="btn" for="fileInput">+ Add photos</label>
         <input id="fileInput" type="file" accept="image/*" multiple hidden>
         <button id="fillBtn" class="btn ghost" title="Fill every empty panel with the samples, in order">Fill panels</button>
+        <button id="shufflePhotosBtn" class="btn ghost" title="Deal the photos into the panels in a new order">Shuffle</button>
       </div>
       <div id="photoStrip" class="photo-strip"></div>
       <p class="tiny">Drag &amp; drop photos anywhere on the page. Click a sample to put it in the selected panel.</p>
@@ -73,7 +75,13 @@
     </section>
 
     <section class="panel-block">
-      <h2>4 · Grade &amp; finish</h2>
+      <h2>4 · Lettering</h2>
+      <div id="titleStyleRow" class="choice-grid three"></div>
+      <p class="tiny">Sunset Fade is the classic gradient title; Neon Tube glows like a sign; Chrome is polished silver.</p>
+    </section>
+
+    <section class="panel-block">
+      <h2>5 · Grade &amp; finish</h2>
       <div id="gradeRow" class="choice-grid"></div>
       <label class="check"><input id="grainCheck" type="checkbox" checked> Film grain</label>
       <label class="check"><input id="vignetteCheck" type="checkbox" checked> Vignette</label>

@@ -1,12 +1,13 @@
-// Neon Coast Cover Studio — the editor.
+// Neon Coast Cover Studio v2 — the editor.
 //
-// Wires the preview canvas, the photo strip, the layout / grade / caption
-// controls and the PNG export together around the renderer in render.js.
-// Every edit goes through `commit`, which snapshots the state for undo/redo
-// and re-renders the preview. Nothing here talks to the network: photos are
-// read from the machine (file input or drag-and-drop) or from app/samples/.
+// Wires the preview canvas, the photo strip, the layout / grade / lettering
+// controls and the PNG export together around the painter in render.js.
+// Every edit goes through `history.commit`, which snapshots the state for
+// undo/redo and re-renders the preview. Nothing here talks to the network:
+// photos are read from the machine (file input or drag-and-drop) or from
+// app/samples/.
 
-import { LAYOUTS, GRADES, SIZES, SAMPLE_PHOTOS, defaultState, layoutQuads, drawCover, exportCoverPNG } from './render.js';
+import { LAYOUTS, GRADES, TITLE_STYLES, SIZES, SAMPLE_PHOTOS, defaultState, layoutQuads, drawCover, exportCoverPNG } from './render.js';
 import { applyShotMode } from './shots.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -16,64 +17,81 @@ const pctx = preview.getContext('2d');
 const state = defaultState();
 const images = new Map(); // photo id -> loaded HTMLImageElement
 let activeSlot = 0;
-let undoStack = [];
-let redoStack = [];
-// commit() records the state as it stood at the previous commit, so one
-// undo step always returns to the state before the change it undoes.
-let lastCommitted = null;
-let renderQueued = false;
 let shotMode = false;
 
-function serializable() {
-  const { layout, grade, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels } = state;
-  return { layout, grade, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels };
+// A few ready-made captions for the Surprise-me shuffle.
+const CAPTIONS = [
+  ['NEON COAST', 'vice city nights'],
+  ['SUNSET HEIST', 'a leonida story'],
+  ['PIER PRESSURE', 'golden hour in vice city'],
+  ['NIGHT SHIFT', 'neon on wet pavement'],
+  ['PALM ROYALE', 'cruisin\u2019 the boulevard'],
+  ['VICE ROYALE', 'two tickets to paradise'],
+  ['HOT PURSUIT', 'sirens at sunset'],
+  ['OCEAN DRIVE', 'top down, radio up'],
+];
+
+function snapshotOf() {
+  const { layout, grade, titleStyle, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels } = state;
+  return { layout, grade, titleStyle, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels };
 }
+
+// Undo history: commit() stores the state as it stood before the change,
+// so one undo step always returns to the state before that change.
+const history = {
+  past: [],
+  future: [],
+  last: null,
+  commit() {
+    const now = JSON.stringify(snapshotOf());
+    // A blur can fire a second 'change' after the one already committed
+    // (e.g. clicking Undo right after typing): nothing changed, no step.
+    if (now === this.last) {
+      queueRender();
+      return;
+    }
+    if (this.last !== null) {
+      this.past.push(this.last);
+      if (this.past.length > 60) this.past.shift();
+    }
+    this.last = now;
+    this.future = [];
+    syncUndoButtons();
+    queueRender();
+  },
+  undo() {
+    if (!this.past.length) return;
+    this.future.push(JSON.stringify(snapshotOf()));
+    restore(JSON.parse(this.past.pop()));
+    this.last = JSON.stringify(snapshotOf());
+    syncUndoButtons();
+    syncControls();
+    queueRender();
+  },
+  redo() {
+    if (!this.future.length) return;
+    this.past.push(JSON.stringify(snapshotOf()));
+    restore(JSON.parse(this.future.pop()));
+    this.last = JSON.stringify(snapshotOf());
+    syncUndoButtons();
+    syncControls();
+    queueRender();
+  },
+  reset() {
+    this.past = [];
+    this.future = [];
+    this.last = JSON.stringify(snapshotOf());
+    syncUndoButtons();
+  },
+};
 
 function restore(snapshot) {
   Object.assign(state, JSON.parse(JSON.stringify(snapshot)));
 }
 
-function commit() {
-  const now = JSON.stringify(serializable());
-  // A blur can fire a second 'change' after the one already committed
-  // (e.g. clicking Undo right after typing): nothing changed, no new step.
-  if (now === lastCommitted) {
-    queueRender();
-    return;
-  }
-  if (lastCommitted !== null) {
-    undoStack.push(lastCommitted);
-    if (undoStack.length > 60) undoStack.shift();
-  }
-  lastCommitted = now;
-  redoStack = [];
-  syncUndoButtons();
-  queueRender();
-}
-
-function undo() {
-  if (!undoStack.length) return;
-  redoStack.push(JSON.stringify(serializable()));
-  restore(JSON.parse(undoStack.pop()));
-  lastCommitted = JSON.stringify(serializable());
-  syncUndoButtons();
-  syncControls();
-  queueRender();
-}
-
-function redo() {
-  if (!redoStack.length) return;
-  undoStack.push(JSON.stringify(serializable()));
-  restore(JSON.parse(redoStack.pop()));
-  lastCommitted = JSON.stringify(serializable());
-  syncUndoButtons();
-  syncControls();
-  queueRender();
-}
-
 function syncUndoButtons() {
-  $('#undoBtn').disabled = undoStack.length === 0;
-  $('#redoBtn').disabled = redoStack.length === 0;
+  $('#undoBtn').disabled = history.past.length === 0;
+  $('#redoBtn').disabled = history.future.length === 0;
 }
 
 function loadImage(src) {
@@ -96,6 +114,7 @@ async function ensureAllImages() {
   await Promise.all(state.photos.map((p) => ensureImage(p).catch(() => null)));
 }
 
+let renderQueued = false;
 function queueRender() {
   if (renderQueued) return;
   renderQueued = true;
@@ -128,21 +147,19 @@ async function addPhotos(files) {
     if (!file.type.startsWith('image/')) continue;
     const id = `upload-${++photoSeq}-${Date.now()}`;
     const src = URL.createObjectURL(file);
-    const photo = { id, name: file.name.replace(/\.[^.]+$/, '') || 'Photo', src };
-    state.photos.push(photo);
-    added.push(photo);
+    state.photos.push({ id, name: file.name.replace(/\.[^.]+$/, '') || 'Photo', src });
+    added.push(id);
   }
   if (!added.length) return;
   // New photos go to the first empty panels of the current layout, in the
   // same undo step as the add itself.
-  const { quads } = layoutQuads(state.layout, 100, 100);
-  const slots = quads.map((q) => q.slot);
+  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
   let i = 0;
   for (const slot of slots) {
     if (i >= added.length) break;
-    if (!state.panels[slot].photo) state.panels[slot].photo = added[i++].id;
+    if (!state.panels[slot].photo) state.panels[slot].photo = added[i++];
   }
-  commit();
+  history.commit();
   syncPhotoStrip();
   queueRender();
 }
@@ -156,8 +173,7 @@ async function loadSamples() {
 }
 
 function fillPanelsWithSamples() {
-  const { quads } = layoutQuads(state.layout, 100, 100);
-  const slots = quads.map((q) => q.slot);
+  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
   let i = 0;
   for (const slot of slots) {
     if (state.panels[slot].photo) continue;
@@ -165,8 +181,45 @@ function fillPanelsWithSamples() {
     if (sample) state.panels[slot].photo = sample.id;
     i++;
   }
-  commit();
+  history.commit();
   syncPhotoStrip();
+}
+
+function shufflePhotos() {
+  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
+  const pool = [...state.photos];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  slots.forEach((slot, i) => {
+    const photo = pool[i % pool.length];
+    if (photo) {
+      state.panels[slot].photo = photo.id;
+      state.panels[slot].scale = 1;
+      state.panels[slot].ox = 0;
+      state.panels[slot].oy = 0;
+    }
+  });
+  history.commit();
+  syncPhotoStrip();
+}
+
+function surpriseMe() {
+  const pick = (obj) => {
+    const keys = Object.keys(obj);
+    return keys[Math.floor(Math.random() * keys.length)];
+  };
+  state.layout = pick(LAYOUTS);
+  state.grade = pick(GRADES);
+  state.titleStyle = pick(TITLE_STYLES);
+  const [title, subtitle] = CAPTIONS[Math.floor(Math.random() * CAPTIONS.length)];
+  state.title = title;
+  state.subtitle = subtitle;
+  state.heat = 3 + Math.floor(Math.random() * 3);
+  activeSlot = 0;
+  shufflePhotos();
+  syncControls();
 }
 
 function syncPhotoStrip() {
@@ -189,7 +242,7 @@ function syncPhotoStrip() {
       state.panels[activeSlot].scale = 1;
       state.panels[activeSlot].ox = 0;
       state.panels[activeSlot].oy = 0;
-      commit();
+      history.commit();
       syncPhotoStrip();
     });
     strip.appendChild(btn);
@@ -227,6 +280,7 @@ function buildChoices(container, entries, current, onPick, swatch) {
 function syncControls() {
   document.querySelectorAll('#layoutRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.layout));
   document.querySelectorAll('#gradeRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.grade));
+  document.querySelectorAll('#titleStyleRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.titleStyle));
   document.querySelectorAll('.size-btn').forEach((b) => b.classList.toggle('active', b.dataset.size === state.size));
   $('#eyebrowInput').value = state.eyebrow;
   $('#titleInput').value = state.title;
@@ -249,7 +303,7 @@ function renderHeatStars() {
     if (i > state.heat) s.className = 'off';
     s.addEventListener('click', () => {
       state.heat = i;
-      commit();
+      history.commit();
       renderHeatStars();
     });
     el.appendChild(s);
@@ -330,7 +384,7 @@ preview.addEventListener('pointermove', (event) => {
 });
 
 preview.addEventListener('pointerup', () => {
-  if (drag && drag.moved) commit();
+  if (drag && drag.moved) history.commit();
   drag = null;
   preview.classList.remove('dragging');
 });
@@ -353,18 +407,22 @@ async function boot() {
   buildChoices('#layoutRow', LAYOUTS, state.layout, (key) => {
     state.layout = key;
     activeSlot = 0;
-    commit();
+    history.commit();
     syncPhotoStrip();
   });
   buildChoices('#gradeRow', GRADES, state.grade, (key) => {
     state.grade = key;
-    commit();
+    history.commit();
   }, true);
+  buildChoices('#titleStyleRow', TITLE_STYLES, state.titleStyle, (key) => {
+    state.titleStyle = key;
+    history.commit();
+  });
 
   document.querySelectorAll('.size-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.size = btn.dataset.size;
-      commit();
+      history.commit();
       syncControls();
     });
   });
@@ -374,41 +432,43 @@ async function boot() {
     event.target.value = '';
   });
   $('#fillBtn').addEventListener('click', fillPanelsWithSamples);
+  $('#shufflePhotosBtn').addEventListener('click', shufflePhotos);
+  $('#shuffleBtn').addEventListener('click', surpriseMe);
   $('#fitBtn').addEventListener('click', () => {
     state.panels[activeSlot].fit = 'fit';
     state.panels[activeSlot].scale = 1;
-    commit();
+    history.commit();
   });
   $('#fillPanelBtn').addEventListener('click', () => {
     state.panels[activeSlot].fit = 'fill';
     state.panels[activeSlot].scale = 1;
-    commit();
+    history.commit();
   });
   $('#zoomSlider').addEventListener('input', (event) => {
     state.panels[activeSlot].scale = Number(event.target.value) / 100;
     queueRender();
   });
-  $('#zoomSlider').addEventListener('change', () => commit());
+  $('#zoomSlider').addEventListener('change', () => history.commit());
 
   const textInput = (id, key) => {
     $(id).addEventListener('input', (event) => {
       state[key] = event.target.value;
       queueRender();
     });
-    $(id).addEventListener('change', () => commit());
+    $(id).addEventListener('change', () => history.commit());
   };
   textInput('#eyebrowInput', 'eyebrow');
   textInput('#titleInput', 'title');
   textInput('#subtitleInput', 'subtitle');
   textInput('#badgeInput', 'badge');
 
-  $('#grainCheck').addEventListener('change', (event) => { state.grain = event.target.checked; commit(); });
-  $('#vignetteCheck').addEventListener('change', (event) => { state.vignette = event.target.checked; commit(); });
-  $('#undoBtn').addEventListener('click', undo);
-  $('#redoBtn').addEventListener('click', redo);
+  $('#grainCheck').addEventListener('change', (event) => { state.grain = event.target.checked; history.commit(); });
+  $('#vignetteCheck').addEventListener('change', (event) => { state.vignette = event.target.checked; history.commit(); });
+  $('#undoBtn').addEventListener('click', () => history.undo());
+  $('#redoBtn').addEventListener('click', () => history.redo());
   document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) { event.preventDefault(); undo(); }
-    if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey))) { event.preventDefault(); redo(); }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) { event.preventDefault(); history.undo(); }
+    if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey))) { event.preventDefault(); history.redo(); }
   });
 
   $('#exportBtn').addEventListener('click', () => exportOne(state.size));
@@ -433,15 +493,13 @@ async function boot() {
 
   await loadSamples();
   fillPanelsWithSamples();
-  undoStack = [];
-  redoStack = [];
-  lastCommitted = JSON.stringify(serializable());
+  history.reset();
   syncControls();
   syncUndoButtons();
 
   // Deterministic screenshot scenes (?shot=cover / ?shot=editor) for the
   // entry's screenshots. Returns true when a scene took over.
-  shotMode = applyShotMode({ state, images, ensureImage, renderPreview, exportOne, commit, syncControls });
+  shotMode = applyShotMode({ state, images, ensureImage, renderPreview, exportOne, commit: () => history.commit(), syncControls });
   queueRender();
 }
 

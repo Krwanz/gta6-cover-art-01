@@ -1,53 +1,54 @@
-// Neon Coast Cover Studio — entry program (Node 22, standard library only).
+// Neon Coast Cover Studio v2 — entry program (Node 22, standard library only).
 //
-// Hands the app in: copies this repository's app/ and screenshots/ to the
-// output directory and writes /output/dossier.json with the vendored make.fun
-// library (vendor/makefun-app.ts, the kit's copy, unchanged).
+// Hands the app in: copies this repository's app/ and screenshots/ into the
+// output directory, then writes /output/dossier.json with the vendored
+// make.fun library (vendor/makefun-app.ts, the kit's copy, unchanged).
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 //
 // The program is deterministic: the same repository always writes the same
-// bytes, so the grader's two runs match.
+// bytes, so the grader's two runs agree byte for byte.
 
 import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-app.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const repoRoot = fileURLToPath(new URL('.', import.meta.url));
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-function countEntries(dir: string): number {
-  let total = 0;
+// Count a directory tree's entries (files and folders together).
+function treeSize(dir: string): number {
+  let n = 0;
   for (const name of readdirSync(dir)) {
+    n += 1;
     const path = join(dir, name);
-    total += 1;
-    if (statSync(path).isDirectory()) total += countEntries(path);
+    if (statSync(path).isDirectory()) n += treeSize(path);
   }
-  return total;
+  return n;
 }
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'app'), join(out, 'app'), { recursive: true });
+mkdirSync(outDir, { recursive: true });
+cpSync(join(repoRoot, 'app'), join(outDir, 'app'), { recursive: true });
 
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+mkdirSync(join(outDir, 'screenshots'), { recursive: true });
+if (existsSync(join(repoRoot, 'screenshots'))) {
+  cpSync(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'), { recursive: true });
 }
 
-// The scorer's own caps (reference/gate.json): app/ at most 993 files and
-// directories and 48 MiB in all, screenshots at most 4 files of 256 KiB, the
-// dossier at most 1.5 MiB with its text at most 160 KiB. The whole of /output
-// shares the platform's 1,000-entry and 64 MiB caps, so count before writing.
-const appEntries = countEntries(join(out, 'app'));
-const shotEntries = countEntries(join(out, 'screenshots'));
-if (appEntries > 993) throw new Error(`app/ holds ${appEntries} entries, over the 993 cap`);
-if (shotEntries > 4) throw new Error(`screenshots/ holds ${shotEntries} files, over the 4 cap`);
+// The gate's caps (reference/gate.json): app/ at most 993 entries and
+// 48 MiB, screenshots at most 4 files of 256 KiB, the dossier at most
+// 1.5 MiB with its text at most 160 KiB. The whole of /output shares the
+// platform's 1,000-entry and 64 MiB caps, so count before writing.
+const appCount = treeSize(join(outDir, 'app'));
+const shotCount = treeSize(join(outDir, 'screenshots'));
+if (appCount > 993) throw new Error(`app/ holds ${appCount} entries, over the 993 cap`);
+if (shotCount > 4) throw new Error(`screenshots/ holds ${shotCount} files, over the 4 cap`);
 
 writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
+  join(outDir, 'dossier.json'),
+  buildDossier(outDir, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
     app_max_files: 993,
@@ -56,4 +57,4 @@ writeFileSync(
   }),
 );
 
-console.log(`Neon Coast Cover Studio handed in: app/ (${appEntries} entries), screenshots/ (${shotEntries} files), dossier.json`);
+console.log(`Neon Coast Cover Studio v2 handed in: app/ (${appCount} entries), screenshots/ (${shotCount} files), dossier.json`);
