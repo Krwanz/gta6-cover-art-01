@@ -1,531 +1,156 @@
-// Neon Coast Cover Studio v2 — the editor.
+// Vice City Cover Studio — bootstrap.
 //
-// Wires the preview canvas, the photo strip, the layout / grade / lettering
-// controls and the PNG export together around the painter in render.js.
-// Every edit goes through `history.commit`, which snapshots the state for
-// undo/redo and re-renders the preview. Nothing here talks to the network:
-// photos are read from the machine (file input or drag-and-drop) or from
-// app/samples/.
+// Loads the nine illustrated panels and the two fonts, builds the first
+// cover, wires the editor, paints the three example covers and the
+// before/after slider. Everything is local: no network request is made
+// after the page loads.
 
-import { LAYOUTS, GRADES, TITLE_STYLES, SIZES, SAMPLE_PHOTOS, defaultState, layoutQuads, drawCover, exportCoverPNG } from './render.js';
-import { applyShotMode } from './shots.js';
+import { PANEL_FILES, PRESETS, drawCover } from './cover.js';
+import { loadImage, bindEditor, applyShotParams } from './editor.js';
+import { posterizePhoto } from './filters.js';
 
-const $ = (sel) => document.querySelector(sel);
-const preview = $('#preview');
-const pctx = preview.getContext('2d');
+/** The cover the visitor sees first: Sunset Drive, no photo yet. */
+function defaultState() {
+  return {
+    title: 'GRAND THEFT AUTO VI',
+    name: 'VICE CITY',
+    tagline: 'Welcome back to Leonida',
+    preset: 'sunset',
+    mood: 'sunset',
+    size: 'portrait',
+    order: [...PRESETS.sunset.order],
+    photo: null,
+    photoSource: null,
+  };
+}
 
-const state = defaultState();
-const images = new Map(); // photo id -> loaded HTMLImageElement
-let activeSlot = 0;
-let shotMode = false;
+// Live-preview size for each export shape (same aspect, smaller pixels).
+const PREVIEW = {
+  portrait: [540, 675],
+  square: [540, 540],
+  wide: [640, 360],
+};
 
-// A few ready-made captions for the Surprise-me shuffle.
-const CAPTIONS = [
-  ['NEON COAST', 'vice city nights'],
-  ['SUNSET HEIST', 'a leonida story'],
-  ['PIER PRESSURE', 'golden hour in vice city'],
-  ['NIGHT SHIFT', 'neon on wet pavement'],
-  ['PALM ROYALE', 'cruisin\u2019 the boulevard'],
-  ['VICE ROYALE', 'two tickets to paradise'],
-  ['HOT PURSUIT', 'sirens at sunset'],
-  ['OCEAN DRIVE', 'top down, radio up'],
+/** Load the two display faces from the app's own font files. */
+async function loadFonts() {
+  const faces = [
+    new FontFace('Anton', 'url(fonts/Anton-Regular.ttf)'),
+    new FontFace('Pacifico', 'url(fonts/Pacifico-Regular.ttf)'),
+  ];
+  const loaded = await Promise.all(faces.map((f) => f.load().catch(() => null)));
+  loaded.forEach((f) => {
+    if (f) document.fonts.add(f);
+  });
+  await document.fonts.ready;
+}
+
+/** The three example covers on the landing page. */
+const EXAMPLES = [
+  { canvas: 'exampleMale', photo: 'male', preset: 'sunset', name: 'VICE CITY', tagline: 'Sunset Drive' },
+  { canvas: 'exampleFemale', photo: 'female', preset: 'neon', name: 'NEON QUEEN', tagline: 'Neon Night' },
+  { canvas: 'exampleCouple', photo: 'couple', preset: 'yacht', name: 'YACHT PARTY', tagline: 'Yacht Party' },
 ];
 
-function snapshotOf() {
-  const { layout, grade, titleStyle, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels } = state;
-  return { layout, grade, titleStyle, title, subtitle, eyebrow, badge, heat, size, grain, vignette, photos, panels };
-}
-
-// Undo history: commit() stores the state as it stood before the change,
-// so one undo step always returns to the state before that change.
-const history = {
-  past: [],
-  future: [],
-  last: null,
-  commit() {
-    const now = JSON.stringify(snapshotOf());
-    // A blur can fire a second 'change' after the one already committed
-    // (e.g. clicking Undo right after typing): nothing changed, no step.
-    if (now === this.last) {
-      queueRender();
-      return;
+async function renderExamples(baseState, assets, applyExample) {
+  for (const ex of EXAMPLES) {
+    const el = document.getElementById(ex.canvas);
+    if (!el) continue;
+    try {
+      const img = await loadImage(`samples/${ex.photo}.jpg`);
+      const state = {
+        ...baseState,
+        title: 'GRAND THEFT AUTO VI',
+        name: ex.name,
+        tagline: ex.tagline,
+        preset: ex.preset,
+        mood: ex.preset === 'neon' ? 'neon' : 'sunset',
+        order: [...PRESETS[ex.preset].order],
+        photo: { canvas: posterizePhoto(img, 900, 900, 5), x: 0, y: 0, zoom: 1 },
+        photoSource: img,
+      };
+      const ctx = el.getContext('2d');
+      drawCover(ctx, el.width, el.height, state, assets);
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => applyExample(state));
+    } catch (err) {
+      // A missing sample leaves that example blank; the app still works.
     }
-    if (this.last !== null) {
-      this.past.push(this.last);
-      if (this.past.length > 60) this.past.shift();
-    }
-    this.last = now;
-    this.future = [];
-    syncUndoButtons();
-    queueRender();
-  },
-  undo() {
-    if (!this.past.length) return;
-    this.future.push(JSON.stringify(snapshotOf()));
-    restore(JSON.parse(this.past.pop()));
-    this.last = JSON.stringify(snapshotOf());
-    syncUndoButtons();
-    syncControls();
-    queueRender();
-  },
-  redo() {
-    if (!this.future.length) return;
-    this.past.push(JSON.stringify(snapshotOf()));
-    restore(JSON.parse(this.future.pop()));
-    this.last = JSON.stringify(snapshotOf());
-    syncUndoButtons();
-    syncControls();
-    queueRender();
-  },
-  reset() {
-    this.past = [];
-    this.future = [];
-    this.last = JSON.stringify(snapshotOf());
-    syncUndoButtons();
-  },
-};
-
-function restore(snapshot) {
-  Object.assign(state, JSON.parse(JSON.stringify(snapshot)));
-}
-
-function syncUndoButtons() {
-  $('#undoBtn').disabled = history.past.length === 0;
-  $('#redoBtn').disabled = history.future.length === 0;
-}
-
-function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`could not load ${src}`));
-    img.src = src;
-  });
-}
-
-async function ensureImage(photo) {
-  if (images.has(photo.id)) return images.get(photo.id);
-  const img = await loadImage(photo.src);
-  images.set(photo.id, img);
-  return img;
-}
-
-async function ensureAllImages() {
-  await Promise.all(state.photos.map((p) => ensureImage(p).catch(() => null)));
-}
-
-let renderQueued = false;
-function queueRender() {
-  if (renderQueued) return;
-  renderQueued = true;
-  requestAnimationFrame(() => {
-    renderQueued = false;
-    renderPreview();
-  });
-}
-
-async function renderPreview() {
-  const [W, H] = SIZES[state.size] || SIZES['1080x1080'];
-  if (preview.width !== W || preview.height !== H) {
-    preview.width = W;
-    preview.height = H;
-  }
-  await ensureAllImages();
-  await document.fonts.ready;
-  drawCover(pctx, W, H, state, images);
-  // First paint done: the app is ready for drivers and screenshots.
-  if (window.__cover) window.__cover.markReady();
-}
-
-// --- photos ---------------------------------------------------------------
-
-let photoSeq = 0;
-
-async function addPhotos(files) {
-  const added = [];
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    const id = `upload-${++photoSeq}-${Date.now()}`;
-    const src = URL.createObjectURL(file);
-    state.photos.push({ id, name: file.name.replace(/\.[^.]+$/, '') || 'Photo', src });
-    added.push(id);
-  }
-  if (!added.length) return;
-  // New photos go to the first empty panels of the current layout, in the
-  // same undo step as the add itself.
-  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
-  let i = 0;
-  for (const slot of slots) {
-    if (i >= added.length) break;
-    if (!state.panels[slot].photo) state.panels[slot].photo = added[i++];
-  }
-  history.commit();
-  syncPhotoStrip();
-  queueRender();
-}
-
-async function loadSamples() {
-  for (const sample of SAMPLE_PHOTOS) {
-    if (state.photos.some((p) => p.id === sample.id)) continue;
-    state.photos.push({ ...sample });
-  }
-  await ensureAllImages();
-}
-
-function fillPanelsWithSamples() {
-  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
-  let i = 0;
-  for (const slot of slots) {
-    if (state.panels[slot].photo) continue;
-    const sample = state.photos[i % state.photos.length];
-    if (sample) state.panels[slot].photo = sample.id;
-    i++;
-  }
-  history.commit();
-  syncPhotoStrip();
-}
-
-function shufflePhotos() {
-  const slots = layoutQuads(state.layout, 100, 100).quads.map((q) => q.slot);
-  const pool = [...state.photos];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  slots.forEach((slot, i) => {
-    const photo = pool[i % pool.length];
-    if (photo) {
-      state.panels[slot].photo = photo.id;
-      state.panels[slot].scale = 1;
-      state.panels[slot].ox = 0;
-      state.panels[slot].oy = 0;
-    }
-  });
-  history.commit();
-  syncPhotoStrip();
-}
-
-function surpriseMe() {
-  const pick = (obj) => {
-    const keys = Object.keys(obj);
-    return keys[Math.floor(Math.random() * keys.length)];
-  };
-  state.layout = pick(LAYOUTS);
-  state.grade = pick(GRADES);
-  state.titleStyle = pick(TITLE_STYLES);
-  const [title, subtitle] = CAPTIONS[Math.floor(Math.random() * CAPTIONS.length)];
-  state.title = title;
-  state.subtitle = subtitle;
-  state.heat = 3 + Math.floor(Math.random() * 3);
-  activeSlot = 0;
-  shufflePhotos();
-  syncControls();
-}
-
-function syncPhotoStrip() {
-  const strip = $('#photoStrip');
-  strip.innerHTML = '';
-  const activePhoto = state.panels[activeSlot] ? state.panels[activeSlot].photo : null;
-  for (const photo of state.photos) {
-    const btn = document.createElement('button');
-    btn.className = 'photo-thumb' + (photo.id === activePhoto ? ' active' : '');
-    btn.title = photo.name;
-    const img = document.createElement('img');
-    img.src = photo.src;
-    img.alt = photo.name;
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = photo.name;
-    btn.append(img, tag);
-    btn.addEventListener('click', () => {
-      state.panels[activeSlot].photo = photo.id;
-      state.panels[activeSlot].scale = 1;
-      state.panels[activeSlot].ox = 0;
-      state.panels[activeSlot].oy = 0;
-      history.commit();
-      syncPhotoStrip();
-    });
-    strip.appendChild(btn);
   }
 }
 
-// --- controls -------------------------------------------------------------
-
-function buildChoices(container, entries, current, onPick, swatch) {
-  const el = $(container);
-  el.innerHTML = '';
-  for (const [key, def] of Object.entries(entries)) {
-    const btn = document.createElement('button');
-    btn.className = 'choice' + (key === current ? ' active' : '');
-    btn.dataset.key = key;
-    if (swatch) {
-      const s = document.createElement('span');
-      s.className = 'swatch';
-      s.style.background = `linear-gradient(135deg, ${def.wash.join(', ')})`;
-      btn.appendChild(s);
-    }
-    const label = document.createElement('span');
-    label.textContent = def.name;
-    const blurb = document.createElement('small');
-    blurb.textContent = def.blurb || '';
-    btn.append(label, blurb);
-    btn.addEventListener('click', () => {
-      onPick(key);
-      el.querySelectorAll('.choice').forEach((c) => c.classList.toggle('active', c.dataset.key === key));
-    });
-    el.appendChild(btn);
-  }
-}
-
-function syncControls() {
-  document.querySelectorAll('#layoutRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.layout));
-  document.querySelectorAll('#gradeRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.grade));
-  document.querySelectorAll('#titleStyleRow .choice').forEach((c) => c.classList.toggle('active', c.dataset.key === state.titleStyle));
-  document.querySelectorAll('.size-btn').forEach((b) => b.classList.toggle('active', b.dataset.size === state.size));
-  $('#eyebrowInput').value = state.eyebrow;
-  $('#titleInput').value = state.title;
-  $('#subtitleInput').value = state.subtitle;
-  $('#badgeInput').value = state.badge;
-  $('#grainCheck').checked = state.grain;
-  $('#vignetteCheck').checked = state.vignette;
-  renderHeatStars();
-  const panel = state.panels[activeSlot] || { scale: 1 };
-  $('#zoomSlider').value = Math.round(panel.scale * 100);
-  syncPhotoStrip();
-}
-
-function renderHeatStars() {
-  const el = $('#heatStars');
-  el.innerHTML = '';
-  for (let i = 1; i <= 5; i++) {
-    const s = document.createElement('span');
-    s.textContent = '★';
-    if (i > state.heat) s.className = 'off';
-    s.addEventListener('click', () => {
-      state.heat = i;
-      history.commit();
-      renderHeatStars();
-    });
-    el.appendChild(s);
-  }
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-async function exportOne(sizeKey) {
-  await ensureAllImages();
-  await document.fonts.ready;
-  const blob = await exportCoverPNG(state, images, sizeKey);
-  downloadBlob(blob, `neon-coast-${sizeKey}.png`);
-  return blob;
-}
-
-// --- canvas interaction: click to select, drag to crop, wheel to zoom ------
-
-function canvasPoint(event) {
-  const rect = preview.getBoundingClientRect();
-  return {
-    x: ((event.clientX - rect.left) / rect.width) * preview.width,
-    y: ((event.clientY - rect.top) / rect.height) * preview.height,
-  };
-}
-
-function pointInQuad(x, y, quad) {
-  let inside = false;
-  for (let i = 0, j = quad.length - 1; i < quad.length; j = i++) {
-    const [xi, yi] = quad[i];
-    const [xj, yj] = quad[j];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function slotAt(x, y) {
-  const { quads } = layoutQuads(state.layout, preview.width, preview.height);
-  for (let i = quads.length - 1; i >= 0; i--) {
-    if (pointInQuad(x, y, quads[i].quad)) return quads[i].slot;
-  }
-  return null;
-}
-
-let drag = null;
-
-preview.addEventListener('pointerdown', (event) => {
-  const { x, y } = canvasPoint(event);
-  const slot = slotAt(x, y);
-  if (slot === null) return;
-  activeSlot = slot;
-  syncPhotoStrip();
-  const panel = state.panels[slot];
-  drag = { slot, startX: x, startY: y, ox: panel.ox, oy: panel.oy, moved: false };
-  preview.setPointerCapture(event.pointerId);
-  preview.classList.add('dragging');
-});
-
-preview.addEventListener('pointermove', (event) => {
-  if (!drag) return;
-  const { x, y } = canvasPoint(event);
-  const panel = state.panels[drag.slot];
-  const dx = (x - drag.startX) / preview.width;
-  const dy = (y - drag.startY) / preview.height;
-  if (Math.abs(dx) + Math.abs(dy) > 0.002) drag.moved = true;
-  panel.ox = drag.ox + dx;
-  panel.oy = drag.oy + dy;
-  queueRender();
-});
-
-preview.addEventListener('pointerup', () => {
-  if (drag && drag.moved) history.commit();
-  drag = null;
-  preview.classList.remove('dragging');
-});
-
-preview.addEventListener('wheel', (event) => {
-  event.preventDefault();
-  const { x, y } = canvasPoint(event);
-  const slot = slotAt(x, y);
-  if (slot === null) return;
-  activeSlot = slot;
-  const panel = state.panels[slot];
-  panel.scale = Math.max(1, Math.min(4, panel.scale * Math.pow(1.0015, -event.deltaY)));
-  $('#zoomSlider').value = Math.round(panel.scale * 100);
-  queueRender();
-}, { passive: false });
-
-// --- boot -----------------------------------------------------------------
-
-async function boot() {
-  buildChoices('#layoutRow', LAYOUTS, state.layout, (key) => {
-    state.layout = key;
-    activeSlot = 0;
-    history.commit();
-    syncPhotoStrip();
-  });
-  buildChoices('#gradeRow', GRADES, state.grade, (key) => {
-    state.grade = key;
-    history.commit();
-  }, true);
-  buildChoices('#titleStyleRow', TITLE_STYLES, state.titleStyle, (key) => {
-    state.titleStyle = key;
-    history.commit();
-  });
-
-  document.querySelectorAll('.size-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.size = btn.dataset.size;
-      history.commit();
-      syncControls();
-    });
-  });
-
-  $('#fileInput').addEventListener('change', (event) => {
-    addPhotos([...event.target.files]);
-    event.target.value = '';
-  });
-  $('#fillBtn').addEventListener('click', fillPanelsWithSamples);
-  $('#shufflePhotosBtn').addEventListener('click', shufflePhotos);
-  $('#shuffleBtn').addEventListener('click', surpriseMe);
-  $('#fitBtn').addEventListener('click', () => {
-    state.panels[activeSlot].fit = 'fit';
-    state.panels[activeSlot].scale = 1;
-    history.commit();
-  });
-  $('#fillPanelBtn').addEventListener('click', () => {
-    state.panels[activeSlot].fit = 'fill';
-    state.panels[activeSlot].scale = 1;
-    history.commit();
-  });
-  $('#zoomSlider').addEventListener('input', (event) => {
-    state.panels[activeSlot].scale = Number(event.target.value) / 100;
-    queueRender();
-  });
-  $('#zoomSlider').addEventListener('change', () => history.commit());
-
-  const textInput = (id, key) => {
-    $(id).addEventListener('input', (event) => {
-      state[key] = event.target.value;
-      queueRender();
-    });
-    $(id).addEventListener('change', () => history.commit());
-  };
-  textInput('#eyebrowInput', 'eyebrow');
-  textInput('#titleInput', 'title');
-  textInput('#subtitleInput', 'subtitle');
-  textInput('#badgeInput', 'badge');
-
-  $('#grainCheck').addEventListener('change', (event) => { state.grain = event.target.checked; history.commit(); });
-  $('#vignetteCheck').addEventListener('change', (event) => { state.vignette = event.target.checked; history.commit(); });
-  $('#undoBtn').addEventListener('click', () => history.undo());
-  $('#redoBtn').addEventListener('click', () => history.redo());
-  document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) { event.preventDefault(); history.undo(); }
-    if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey))) { event.preventDefault(); history.redo(); }
-  });
-
-  $('#exportBtn').addEventListener('click', () => exportOne(state.size));
-  $('#exportAllBtn').addEventListener('click', async () => {
-    for (const sizeKey of Object.keys(SIZES)) {
-      await exportOne(sizeKey);
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  });
-
-  document.addEventListener('dragover', (event) => event.preventDefault());
-  document.addEventListener('drop', (event) => {
-    event.preventDefault();
-    if (event.dataTransfer.files.length) addPhotos([...event.dataTransfer.files]);
-  });
-
-  // Fonts first, so the first paint already has the real lettering.
+/** Paint the filtered half of the before/after slider. */
+async function renderCompare() {
+  const after = document.getElementById('afterCanvas');
+  if (!after) return;
   try {
-    await document.fonts.load('40px Anton');
-    await document.fonts.load('40px Pacifico');
-  } catch { /* system fallbacks still render */ }
-
-  await loadSamples();
-  fillPanelsWithSamples();
-  history.reset();
-  syncControls();
-  syncUndoButtons();
-
-  // Deterministic screenshot scenes (?shot=cover / ?shot=editor) for the
-  // entry's screenshots. Returns true when a scene took over.
-  shotMode = applyShotMode({ state, images, ensureImage, renderPreview, exportOne, commit: () => history.commit(), syncControls });
-  queueRender();
+    const img = await loadImage('samples/male.jpg');
+    const styled = posterizePhoto(img, 900, 900, 5);
+    const ctx = after.getContext('2d');
+    ctx.drawImage(styled, 0, 0, after.width, after.height);
+  } catch (err) {
+    // The slider simply shows the original photo on its own.
+  }
 }
 
-window.__cover = {
-  state,
-  images,
-  ready: null,
-  _resolveReady: null,
-  markReady() {
-    if (this._resolveReady) { this._resolveReady(); this._resolveReady = null; }
-  },
-  async exportPNG(sizeKey) {
-    await ensureAllImages();
-    await document.fonts.ready;
-    const blob = await exportCoverPNG(state, images, sizeKey);
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  },
-};
-window.__cover.ready = new Promise((resolve) => { window.__cover._resolveReady = resolve; });
+async function init() {
+  const state = defaultState();
+  const assets = { panels: [] };
+  const [panels] = await Promise.all([
+    Promise.all(PANEL_FILES.map((f) => loadImage(f))),
+    loadFonts(),
+  ]);
+  assets.panels = panels;
 
-boot().catch((error) => {
-  console.error(error);
-  document.title = `Cover Studio failed: ${error.message}`;
+  const canvas = document.getElementById('coverCanvas');
+  const renderAll = () => {
+    // In shot=cover mode the canvas is the screenshot itself, so render it
+    // at double size for a crisp capture.
+    const zoom = document.body.dataset.shot === 'cover' ? 2 : 1;
+    const [w, h] = PREVIEW[state.size] || PREVIEW.portrait;
+    if (canvas.width !== w * zoom || canvas.height !== h * zoom) {
+      canvas.width = w * zoom;
+      canvas.height = h * zoom;
+    }
+    drawCover(canvas.getContext('2d'), w * zoom, h * zoom, state, assets);
+  };
+
+  const editor = bindEditor(document, state, assets, renderAll);
+  await applyShotParams(state, assets);
+  // Keep the text fields and pills in step with any ?shot= parameters.
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  };
+  set('titleInput', state.title);
+  set('nameInput', state.name);
+  set('taglineInput', state.tagline || '');
+  editor.markActive();
+  renderAll();
+
+  const applyExample = (exampleState) => {
+    state.title = exampleState.title;
+    state.name = exampleState.name;
+    state.tagline = exampleState.tagline;
+    state.preset = exampleState.preset;
+    state.mood = exampleState.mood;
+    state.order = [...exampleState.order];
+    state.photo = exampleState.photo;
+    state.photoSource = exampleState.photoSource;
+    set('titleInput', state.title);
+    set('nameInput', state.name);
+    set('taglineInput', state.tagline || '');
+    editor.markActive();
+    renderAll();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  renderExamples(state, assets, applyExample);
+  renderCompare();
+
+  // Exposed for the maker's own browser tests, not part of the app.
+  window.__coverApp = { state, assets, renderAll };
+}
+
+init().catch((err) => {
+  const status = document.getElementById('exportStatus');
+  if (status) status.textContent = `The app did not start: ${err.message}`;
 });

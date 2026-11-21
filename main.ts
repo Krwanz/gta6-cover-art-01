@@ -1,16 +1,18 @@
-// Neon Coast Cover Studio v2 — entry program (Node 22, standard library only).
+// Vice City Cover Studio — entry program (Node 22, standard library only).
 //
-// Hands the app in: copies this repository's app/ and screenshots/ into the
-// output directory, then writes /output/dossier.json with the vendored
+// Hands the app in: copies this repository's app/ and screenshots/ into
+// the output directory, then writes /output/dossier.json with the vendored
 // make.fun library (vendor/makefun-app.ts, the kit's copy, unchanged).
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 //
 // The program is deterministic: the same repository always writes the same
-// bytes, so the grader's two runs agree byte for byte.
+// bytes, so the grader's two runs agree byte for byte. It never removes the
+// output directory itself — only its contents — because the grader's
+// /output is owned by root and removing it fails with EPERM.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-app.ts';
@@ -18,31 +20,39 @@ import { buildDossier } from './vendor/makefun-app.ts';
 const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Count a directory tree's entries (files and folders together).
-function treeSize(dir: string): number {
-  let n = 0;
+/** Remove everything inside a directory, leaving the directory in place. */
+function emptyDir(dir: string): void {
+  mkdirSync(dir, { recursive: true });
   for (const name of readdirSync(dir)) {
-    n += 1;
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) n += treeSize(path);
+    rmSync(join(dir, name), { recursive: true, force: true });
   }
-  return n;
 }
 
-mkdirSync(outDir, { recursive: true });
-cpSync(join(repoRoot, 'app'), join(outDir, 'app'), { recursive: true });
+/** Count files and folders in a tree, for the gate caps. */
+function countEntries(dir: string): number {
+  let total = 0;
+  for (const name of readdirSync(dir)) {
+    total += 1;
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) total += countEntries(path);
+  }
+  return total;
+}
 
-mkdirSync(join(outDir, 'screenshots'), { recursive: true });
+emptyDir(outDir);
+cpSync(join(repoRoot, 'app'), join(outDir, 'app'), { recursive: true });
 if (existsSync(join(repoRoot, 'screenshots'))) {
   cpSync(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'), { recursive: true });
+} else {
+  mkdirSync(join(outDir, 'screenshots'), { recursive: true });
 }
 
 // The gate's caps (reference/gate.json): app/ at most 993 entries and
 // 48 MiB, screenshots at most 4 files of 256 KiB, the dossier at most
 // 1.5 MiB with its text at most 160 KiB. The whole of /output shares the
 // platform's 1,000-entry and 64 MiB caps, so count before writing.
-const appCount = treeSize(join(outDir, 'app'));
-const shotCount = treeSize(join(outDir, 'screenshots'));
+const appCount = countEntries(join(outDir, 'app'));
+const shotCount = countEntries(join(outDir, 'screenshots'));
 if (appCount > 993) throw new Error(`app/ holds ${appCount} entries, over the 993 cap`);
 if (shotCount > 4) throw new Error(`screenshots/ holds ${shotCount} files, over the 4 cap`);
 
@@ -57,4 +67,4 @@ writeFileSync(
   }),
 );
 
-console.log(`Neon Coast Cover Studio v2 handed in: app/ (${appCount} entries), screenshots/ (${shotCount} files), dossier.json`);
+console.log(`Vice City Cover Studio handed in: app/ (${appCount} entries), screenshots/ (${shotCount} files), dossier.json`);
